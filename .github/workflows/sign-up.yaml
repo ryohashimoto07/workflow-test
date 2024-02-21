@@ -1,0 +1,108 @@
+name: sign up
+#
+env:
+  CI: true
+#実行時の入力値設定
+on:
+  workflow_dispatch:
+    inputs:
+      userId:
+        description: user mail address
+        required: true
+        type: string
+
+jobs:
+  #パスワード生成→authファイルに追記→シークレット適用
+  password:
+    name: password
+    runs-on: ubuntu-latest
+    #このジョブでの出力
+    outputs:
+      userIds: ${{ steps.create-password.outputs.usernames }}
+      passwords: ${{ steps.create-password.outputs.passwords }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: create password
+        id: create-password
+        run: |-
+          sudo apt install -y pwgen
+          IFS=','
+          passwords=()
+          for username in ${{ github.event.inputs.userId }}; do
+          password=$(pwgen -y -r "\"'()*+,-./:;<=>?@[\\]^_\`{|}~" 10 1)
+          usernames+=("$username")
+          passwords+=("$password")
+          htpasswd -bB bases/dida/dida-ope-train-dx/front/auth "$username" "$password" > /dev/null 2>&1
+          done;
+          echo usernames=${usernames} >>> $GITHUB_OUTPUT
+          echo passwords=${passwords} >>> $GITHUB_OUTPUT
+      #kubectlセットアップ
+      - name: setup kubectl
+        uses: actions-hub/kubectl@master
+        env: ${{ secrets.KUBE_CONFIG }}
+        with:
+          args: get pods
+      #コンテキスト設定
+      - name: set context
+        uses: azure/k8s-actions/k8s-set-context@master
+        with:
+          kubeconfig: XXX
+          context: "dida-aks-g4-japaneast-test"
+      #シークレット適用
+      - name: secret
+        uses: azure/k8s-create-secret@v2
+        with:
+          namespace: "default"
+          secret-type: "generic"
+          secret-name: azure-storage
+          data: ${{ secrets.AZURE_STORAGE_ACCOUNT_DATA }}
+
+  #アプリにログインできるかテスト
+  login_test:
+    name: Login Test Ope Train DX Approve
+    needs: password
+    runs-on: ubuntu-latest
+    steps:
+      - name: login
+        run: |-
+          usernames=${{ needs.password.outputs.usernames }}
+          passwords=#{{ needs.password.outputs.passwords }}
+          len=${#usernames[@]}
+          for ((i=0; i<len; i++ )); do
+          username=${usernames[i]}
+          password=${passwords[i]}
+          http_code=$(curl -u "$username":"$password" -w "%{http_code}" https://dida-ope-train-dx-test.training-remotesupport-komatsu.com/ -o /dev/null -s)
+          echo "$username,$password" >> auth.csv
+          done;
+
+  #blob上のcsvに追加したユーザー情報を追記
+  write_csv:
+    name: Write CSV in Blob Storage
+    needs: [password, login_test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/setup-azure-cli@v1
+        with:
+          install-azcli: true
+
+      - name: Append User Password to CSV
+        run: |-
+          az storage blob download --account-name dataanalysismfkdaily  -c mfkdata  -n user_password_ope_train_dx.csv -f "user_password.csv"
+          cat auth.csv >> "user_password.csv"
+          az storage blob upload -c mfkdata -f user_password.csv -n user_password_ope_train_dx.csv --account-name dataanalysismfkdaily
+          rm -rf auth.csv user_password.csv
+
+      - name: Commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: |-
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "workflow: Registered user of BASIC authentication"
+          git push ope-train-dx

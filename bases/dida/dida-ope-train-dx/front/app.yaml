@@ -1,0 +1,131 @@
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: dida-ope-train-dx-front-deployment
+# spec:
+#   replicas: 2
+#   template:
+#     metadata:
+#       labels:
+#         aadpodidbinding: aks-pod-id
+#         app.kubernetes.io/name: nginx
+#       annotations:
+#         container.apparmor.security.beta.kubernetes.io/app: runtime/default
+#         ad.datadoghq.com/sitelink-portal-web-server.check_names: '["nginx"]'
+#         ad.datadoghq.com/sitelink-portal-web-server.init_configs: '[{}]'
+#         ad.datadoghq.com/sitelink-portal-web-server.instances: '[{"nginx_status_url":"http://%%host%%:8081/status"}]'
+#     spec:
+#       containers:
+#         - name: app
+#           image: imclink.azurecr.io/dida/ope-train-dx/front
+#           ports:
+#             - containerPort: 8001
+#               name: web-app
+#             - containerPort: 8081
+#               name: nginx-status
+#           volumeMounts:
+#             - mountPath: /run/nginx
+#               name: run-nginx
+#             - mountPath: /etc/nginx/http.d/nginx-status.conf
+#               name: nginx-status-conf
+#               subPath: nginx-status.conf
+#               readOnly: true
+#             - mountPath: /etc/nginx/conf.d
+#               name: nginx-conf
+#             - mountPath: /var/cache/nginx
+#               name: var-cache-nginx
+#             - mountPath: /run
+#               name: var-run
+#           securityContext:
+#             seccompProfile:
+#               type: RuntimeDefault
+#             runAsNonRoot: true
+#             readOnlyRootFilesystem: true
+#             runAsUser: 101
+#             runAsGroup: 101
+#             allowPrivilegeEscalation: false
+#             capabilities:
+#               drop:
+#                 - all
+#           livenessProbe:
+#             httpGet:
+#               path: /health
+#               port: nginx-status
+#             initialDelaySeconds: 60
+#             periodSeconds: 180
+#             timeoutSeconds: 3
+#             failureThreshold: 3
+#           readinessProbe:
+#             httpGet:
+#               path: /health
+#               port: nginx-status
+#             initialDelaySeconds: 5
+#             failureThreshold: 1
+#           resources:
+#             requests:
+#               cpu: 10m
+#               memory: 48Mi
+#             limits:
+#               cpu: "1"
+#               memory: 48Mi
+#       volumes:
+#         - name: run-nginx
+#           emptyDir:
+#             medium: Memory
+#         - name: nginx-status-conf
+#           configMap:
+#             name: nginx-status-conf
+#         - name: nginx-conf
+#           emptyDir:
+#             medium: Memory
+#         - name: var-cache-nginx
+#           emptyDir:
+#         - name: var-run
+#           emptyDir:
+#             medium: Memory
+#       enableServiceLinks: false
+#       automountServiceAccountToken: false
+# ---
+# apiVersion: policy/v1
+# kind: PodDisruptionBudget
+# metadata:
+#   name: dida-ope-train-dx-front-pdb
+# spec:
+#   minAvailable: 1
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: internal-dida-ope-train-dx-front
+# spec:
+#   type: ClusterIP
+#   ports:
+#     - port: 8001
+#       name: web-app
+#       targetPort: web-app
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: ope-train-dx-front
+#   annotations:
+#     nginx.ingress.kubernetes.io/configuration-snippet: |
+#       gzip_types application/octet-stream application/json application/javascript text/javascript text/css text/plain image/svg+xml font/ttf;
+#       brotli_types application/octet-stream application/json application/javascript text/javascript text/css text/plain image/svg+xml font/ttf;
+#     nginx.ingress.kubernetes.io/auth-type: basic
+#     nginx.ingress.kubernetes.io/auth-secret: basic-auth-ope-train-dx
+#     nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+# spec:
+#   tls:
+#     - hosts:
+#         - "*.training-remotesupport-komatsu.com"
+#   rules:
+#     - http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: internal-dida-ope-train-dx-front
+#                 port:
+#                   name: web-app
