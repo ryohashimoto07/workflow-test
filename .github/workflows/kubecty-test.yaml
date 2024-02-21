@@ -1,0 +1,22 @@
+name: kubectl Test
+
+env:
+  CI: true
+on:
+  workflow_dispatch:
+
+jobs:
+  kubectl:
+    name: kubectl
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: kubectl setup
+        uses: actions-hub/kubectl@master
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        with:
+          args: config current-context

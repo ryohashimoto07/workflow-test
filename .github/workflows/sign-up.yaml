@@ -36,14 +36,13 @@ jobs:
           passwords+=("$password")
           htpasswd -bB bases/dida/dida-ope-train-dx/front/auth "$username" "$password" > /dev/null 2>&1
           done;
-          echo usernames=${usernames} >>> $GITHUB_OUTPUT
-          echo passwords=${passwords} >>> $GITHUB_OUTPUT
-      #kubectlセットアップ
-      - name: setup kubectl
-        uses: actions-hub/kubectl@master
-        env: ${{ secrets.KUBE_CONFIG }}
+          echo usernames=${usernames} >> $GITHUB_OUTPUT
+          echo passwords=${passwords} >> $GITHUB_OUTPUT
+      #azureログイン
+      - name: Azure Login
+        uses: azure/login@v1
         with:
-          args: get pods
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
       #コンテキスト設定
       - name: set context
         uses: azure/k8s-actions/k8s-set-context@master
