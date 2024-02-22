@@ -1,0 +1,45 @@
+name: command test
+
+env:
+  CI: true
+on:
+  workflow_dispatch:
+    inputs:
+      userId:
+        description: user mail address
+        required: true
+        type: string
+
+jobs:
+  Command:
+    name: command
+    runs-on: ubuntu-latest
+    #このジョブでの出力
+    outputs:
+      userIds: ${{ steps.create-password.outputs.usernames }}
+      passwords: ${{ steps.create-password.outputs.passwords }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: create password
+        id: create-password
+        # run: |-
+        #   sudo apt install -y pwgen
+        #   IFS=,
+        #   passwords=()
+        #   echo ${{ github.event.inputs.userId }}
+        #   for username in ${{ github.event.inputs.userId }}; do
+        #   password=$(pwgen -y -r "\"'()*+,-./:;<=>?@[\\]^_\`{|}~" 10 1)
+        #   echo "$password"
+        #   usernames+=("$username")
+        #   passwords+=("$password")
+        #   htpasswd -bB bases/dida/dida-ope-train-dx/front/auth "$username" "$password" > /dev/null 2>&1
+        #   done;
+        #   echo usernames=${usernames}
+        #   echo passwords=${passwords}
+        run: |-
+          IFS=',' read -ra EMAIL_ARRAY <<< ${{ github.event.inputs.userId }}
+          for EMAIL in "${EMAIL_ARRAY[@]}"; do
+            echo "Processing email: $EMAIL"
+          done

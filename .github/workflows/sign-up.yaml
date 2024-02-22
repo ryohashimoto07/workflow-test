@@ -38,17 +38,13 @@ jobs:
           done;
           echo usernames=${usernames} >> $GITHUB_OUTPUT
           echo passwords=${passwords} >> $GITHUB_OUTPUT
-      #azureログイン
-      - name: Azure Login
-        uses: azure/login@v1
+      #kubectl設定
+      - name: kubectl setup
+        uses: actions-hub/kubectl@master
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-      #コンテキスト設定
-      - name: set context
-        uses: azure/k8s-actions/k8s-set-context@master
-        with:
-          kubeconfig: XXX
-          context: "dida-aks-g4-japaneast-test"
+          args: config current-context
       #シークレット適用
       - name: secret
         uses: azure/k8s-create-secret@v2

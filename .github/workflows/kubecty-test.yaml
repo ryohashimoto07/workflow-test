@@ -1,4 +1,4 @@
-name: kubectl Test
+name: kubectl wf test
 
 env:
   CI: true
@@ -12,11 +12,39 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
 
-      - name: kubectl setup
-        uses: actions-hub/kubectl@master
-        env:
-          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      # - name: kubectl setup
+      #   uses: actions-hub/kubectl@master
+      #   env:
+      #     KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      #   with:
+      #     args: |-
+      #       config get-contexts
+
+      - name: set context
+        uses: azure/k8s-set-context@v3
         with:
-          args: config current-context
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          context: dida-aks-g4-japaneast-test
+          # cluster-type: arc
+          # k8s-url: https://dida-aks-g4-japaneast-test-89eaa38a.hcp.japaneast.azmk8s.io:443%
+          # k8s-secret: ${{ secrets.K8S_SECRET }}
+          # cluster-name: dida-aks-g4-japaneast-test
+          # resource-group: DataAnalysisTest
+          # token: ${{ secrets.SA_TOKEN }}
+
+      - name: Verify context
+        run: |-
+          kubectl delete secret basic-auth-ope-train-dx
+          kubectl create secret generic basic-auth-ope-train-dx --from-file=bases/dida/dida-ope-train-dx/front/auth
+
+      # - name: kubectl secret
+      #   uses: azure/k8s-create-secret@v2
+      #   with:
+      #     namespace: "default"
+      #     secret-type: "generic"
+      #     secret-name: basic-auth-ope-train-dx
+      #     string-data: |-
+      #       {"username": "hiroki_nakamoto", "password": "my_secure_password"}
