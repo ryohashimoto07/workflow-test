@@ -1,103 +1,181 @@
-name: sign up
-#
-env:
-  CI: true
-#実行時の入力値設定
+name: manage-basic-auth-users (ope-train-dx-app)
+
 on:
   workflow_dispatch:
     inputs:
+      app:
+        description: target apps for user management
+        type: choice
+        options:
+          - battery-management-support-app
+          - ope-train-dx
+          - workflow-test
+      environment:
+        description: Select the environment in which you manage users
+        type: choice
+        default: dida
+        options:
+          - dida
+          - dida-test
+      action:
+        description: select create(update) or delete user
+        type: choice
+        default: create or update
+        options:
+          - create or update
+          - delete
       userId:
         description: user mail address
         required: true
         type: string
 
+env:
+  CI: true
+  AUTH_PATH: ${{ github.event.inputs.environment }}/${{ github.event.inputs.app }}/auth
+  ACTION: ${{ github.event.inputs.action }}
+
 jobs:
-  #パスワード生成→authファイルに追記→シークレット適用
-  password:
-    name: password
+  create_new_account:
+    name: create new account
     runs-on: ubuntu-latest
-    #このジョブでの出力
     outputs:
-      userIds: ${{ steps.create-password.outputs.usernames }}
+      usernames: ${{ steps.create-password.outputs.usernames }}
       passwords: ${{ steps.create-password.outputs.passwords }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.app }}
 
       - name: create password
         id: create-password
         run: |-
           sudo apt install -y pwgen
-          IFS=','
+          IFS=' ' read -ra username_array <<< "${{ github.event.inputs.userId }}"
           passwords=()
-          for username in ${{ github.event.inputs.userId }}; do
-          password=$(pwgen -y -r "\"'()*+,-./:;<=>?@[\\]^_\`{|}~" 10 1)
-          usernames+=("$username")
-          passwords+=("$password")
-          htpasswd -bB bases/dida/dida-ope-train-dx/front/auth "$username" "$password" > /dev/null 2>&1
-          done;
-          echo usernames=${usernames} >> $GITHUB_OUTPUT
-          echo passwords=${passwords} >> $GITHUB_OUTPUT
-      #kubectl設定
-      - name: kubectl setup
-        uses: actions-hub/kubectl@master
-        env:
-          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+          for username in "${username_array[@]}"; do
+            password=$(pwgen -y -r "\"'()*+,-./:;<=>?@\$\!\&[\\]^_\`{|}~" 10 1)
+            usernames+=("$username")
+            passwords+=("$password")
+            if [[ "$ACTION" == 'create or update' ]]; then
+              htpasswd -bB "$AUTH_PATH" "$username" "$password" > /dev/null 2>&1
+            else
+              echo ${{ github.event.inputs.action }}
+              htpasswd -D "$AUTH_PATH" "$username"
+            fi
+           echo $username $password
+          done
+          echo usernames=${usernames[@]} >> $GITHUB_OUTPUT
+          echo passwords=${passwords[@]} >> $GITHUB_OUTPUT
+
+      - name: upload
+        uses: actions/upload-artifact@v4
         with:
-          args: config current-context
-      #シークレット適用
-      - name: secret
-        uses: azure/k8s-create-secret@v2
+          name: auth
+          path: ${{ env.AUTH_PATH }}
+
+      - name: set context
+        uses: azure/k8s-set-context@v3
         with:
-          namespace: "default"
-          secret-type: "generic"
-          secret-name: azure-storage
-          data: ${{ secrets.AZURE_STORAGE_ACCOUNT_DATA }}
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          context: dida-aks-g4-japaneast-test
+
+      - name: create secret
+        run: |-
+          kubectl delete secret basic-auth-${{ github.event.inputs.app }}
+          kubectl create secret generic basic-auth-${{ github.event.inputs.app }} --from-file=$AUTH_PATH
 
   #アプリにログインできるかテスト
   login_test:
-    name: Login Test Ope Train DX Approve
-    needs: password
+    name: Login Test Ope Train DX App
+    needs: create_new_account
     runs-on: ubuntu-latest
-    steps:
-      - name: login
-        run: |-
-          usernames=${{ needs.password.outputs.usernames }}
-          passwords=#{{ needs.password.outputs.passwords }}
-          len=${#usernames[@]}
-          for ((i=0; i<len; i++ )); do
-          username=${usernames[i]}
-          password=${passwords[i]}
-          http_code=$(curl -u "$username":"$password" -w "%{http_code}" https://dida-ope-train-dx-test.training-remotesupport-komatsu.com/ -o /dev/null -s)
-          echo "$username,$password" >> auth.csv
-          done;
-
-  #blob上のcsvに追加したユーザー情報を追記
-  write_csv:
-    name: Write CSV in Blob Storage
-    needs: [password, login_test]
-    runs-on: ubuntu-latest
+    outputs:
+      loginTestStatus: ${{ steps.login.outputs.result }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Azure CLI
-        uses: azure/setup-azure-cli@v1
         with:
-          install-azcli: true
+          ref: ${{ github.event.inputs.app }}
+
+      - name: login
+        id: login
+        if: env.ACTION == 'create or update'
+        run: |-
+          if [[ "${{ github.event.inputs.environment }}" == "dida" ]]; then
+            url="https://dida-${{ github.event.inputs.app }}.training-remotesupport-komatsu.com/"
+          else
+            url="https://dida-${{ github.event.inputs.app }}-test.training-remotesupport-komatsu.com/"
+          fi
+          usernames=(${{ needs.create_new_account.outputs.usernames }})
+          passwords=(${{ needs.create_new_account.outputs.passwords }})
+          len=${#usernames[@]}
+          for ((i=0; i<$len; i++ )); do
+          username=${usernames[i]}
+          password=${passwords[i]}
+          http_code=$(curl -u "$username:$password" -w "%{http_code}" "$url" -o /dev/null -s)
+          echo $http_code
+          if [[ $http_code != 200 ]];then
+           echo "result=false" >> $GITHUB_OUTPUT
+          fi
+          echo "$username,$password" >> ./auth.csv
+          done;
 
       - name: Append User Password to CSV
+        if: steps.login.outputs.loginTestStatus != 'false'
+        env:
+          BLOB_FILE_NAME: user_password_${{ github.event.inputs.environment }}-${{ github.event.inputs.app }}.csv
         run: |-
-          az storage blob download --account-name dataanalysismfkdaily  -c mfkdata  -n user_password_ope_train_dx.csv -f "user_password.csv"
-          cat auth.csv >> "user_password.csv"
-          az storage blob upload -c mfkdata -f user_password.csv -n user_password_ope_train_dx.csv --account-name dataanalysismfkdaily
-          rm -rf auth.csv user_password.csv
+          az storage blob download --container-name mfkdata --name $BLOB_FILE_NAME --file "user_password.csv" --account-name dataanalysismfkdaily --sas-token "${{ secrets.AZURE_STORAGE_SAS_TOKEN }}"
+          IFS=' ' read -ra username_array <<< "${{ github.event.inputs.userId }}"
+          for username in "${username_array[@]}"; do
+            grep -v "$username" user_password.csv > temp.csv && mv temp.csv user_password.csv
+          done
+          if [[ "$ACTION" == 'create or update' ]]; then
+              cat auth.csv >> "user_password.csv"
+              rm -rf auth.csv
+          fi
+          az storage blob upload --container-name mfkdata --name $BLOB_FILE_NAME --file "user_password.csv" --account-name dataanalysismfkdaily --sas-token "${{ secrets.AZURE_STORAGE_SAS_TOKEN }}" --overwrite
+          rm -rf user_password.csv
+
+      - name: download
+        uses: actions/download-artifact@v4
+        with:
+          name: auth
+          path: ${{ github.event.inputs.environment }}/${{ github.event.inputs.app }}/
 
       - name: Commit
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.login.outputs.loginTestStatus != 'false'
         run: |-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -am "workflow: Registered user of BASIC authentication"
-          git push ope-train-dx
+          git add $AUTH_PATH
+          git commit -m "workflow: Registered user of BASIC authentication for ${{ github.event.inputs.app }}"
+          git push origin ${{ github.event.inputs.app }}
+
+  #ログイン確認失敗したとき
+  revert_secret:
+    name: revert secret
+    needs: login_test
+    runs-on: ubuntu-latest
+    if: needs.login_test.outputs.loginTestStatus == 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.app }}
+
+      - name: set context
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          context: dida-aks-g4-japaneast-test
+
+      - name: create secret
+        run: |-
+          kubectl delete secret basic-auth-${{ github.event.inputs.app }}
+          kubectl create secret generic basic-auth-${{ github.event.inputs.app }} --from-file=$AUTH_PATH

@@ -1,0 +1,113 @@
+name: one job create user
+
+env:
+  CI: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      userId:
+        description: user mail address
+        required: true
+        type: string
+
+jobs:
+  create_new_account:
+    name: create new account
+    runs-on: ubuntu-latest
+    outputs:
+      usernames: ${{ steps.create-password.outputs.usernames }}
+      passwords: ${{ steps.create-password.outputs.passwords }}
+      auth: ${{steps.create-password.outputs.auth}}
+      loginTestStatus: ${{ steps.login.outputs.result }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: workflow-test
+
+      - name: create password
+        id: create-password
+        run: |-
+          sudo apt install -y pwgen
+          IFS=',' read -ra username_array <<< ${{ github.event.inputs.userId }}
+          passwords=()
+          for username in "${username_array[@]}"; do
+           password=$(pwgen -y -r "\"'()*+,-./:;<=>?@\$\!\&[\\]^_\`{|}~" 10 1)
+           usernames+=("$username")
+           passwords+=("$password")
+           htpasswd -bB bases/dida/dida-ope-train-dx/front/auth "$username" "$password" > /dev/null 2>&1
+           echo $username
+          done
+          echo usernames=${usernames[@]} >> $GITHUB_OUTPUT
+          echo passwords=${passwords[@]} >> $GITHUB_OUTPUT
+          echo auth=$(cat bases/dida/dida-ope-train-dx/front/auth) >> $GITHUB_OUTPUT
+
+      - name: set context
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          context: dida-aks-g4-japaneast-test
+
+      - name: create secret
+        run: |-
+          kubectl delete secret basic-auth-ope-train-dx
+          kubectl create secret generic basic-auth-ope-train-dx --from-file=bases/dida/dida-ope-train-dx/front/auth
+
+      - name: login
+        id: login
+        run: |-
+          usernames=(${{ steps.create-password.outputs.usernames }})
+          passwords=(${{ steps.create-password.outputs.passwords }})
+          len=${#usernames[@]}
+          for ((i=0; i<$len; i++ )); do
+          username=${usernames[i]}
+          password=${passwords[i]}
+          http_code=$(curl -u "$username:$password" -w "%{http_code}" https://dida-ope-train-dx-test.training-remotesupport-komatsu.com/ -o /dev/null -s)
+          echo $http_code
+          if [[ $http_code != 200 ]];then
+           echo "result=false" >> $GITHUB_OUTPUT
+          fi
+          echo "$username,$password" >> ./auth.csv
+          done;
+
+      # - name: Append User Password to CSV
+      #   if: steps.login.outputs.loginTestStatus != 'false'
+      #   run: |-
+      #     az storage blob download --container-name mfkdata --name user_password_ope_train_dx.csv  --file "user_password.csv" --account-name dataanalysismfkdaily --sas-token "${{ secrets.AZURE_STORAGE_SAS_TOKEN }}"
+      #     cat auth.csv >> "user_password.csv"
+      #     az storage blob upload --container-name mfkdata --name user_password_ope_train_dx.csv  --file "user_password.csv" --account-name dataanalysismfkdaily --sas-token "${{ secrets.AZURE_STORAGE_SAS_TOKEN }}" --overwrite
+
+      - name: Commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.login.outputs.loginTestStatus != 'false'
+        run: |-
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ./bases/dida/dida-ope-train-dx/front/auth
+          git commit -m "workflow: Registered user of BASIC authentication for ope-train-dx"
+          git push origin workflow-test
+
+  #ログイン確認失敗したとき
+  revert_secret:
+    name: revert secret
+    needs: create_new_account
+    runs-on: ubuntu-latest
+    if: needs.create_new_account.outputs.loginTestStatus == 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: set context
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          context: dida-aks-g4-japaneast-test
+
+      - name: create secret
+        run: |-
+          kubectl delete secret basic-auth-ope-train-dx
+          kubectl create secret generic basic-auth-ope-train-dx --from-file=bases/dida/dida-ope-train-dx/front/auth
