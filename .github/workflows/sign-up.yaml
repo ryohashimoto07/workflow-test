@@ -138,6 +138,17 @@ jobs:
         az storage blob upload --container-name mfkdata --name $BLOB_FILE_NAME --file "user_password.csv" --account-name dataanalysismfkdaily --sas-token "${{ secrets.AZURE_STORAGE_SAS_TOKEN }}" --overwrite
         rm -rf user_password.csv
 
+  merge:
+    name: update auth file
+    needs: login_test
+    runs-on: ubuntu-latest
+    outputs:
+      pr-url: ${{ steps.pull-request.outputs.url }}
+    if: needs.login.outputs.loginTestStatus != 'false'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
     - name: download
       uses: actions/download-artifact@v4
       with:
@@ -147,13 +158,29 @@ jobs:
     - name: Commit
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      if: steps.login.outputs.loginTestStatus != 'false'
       run: |-
+        git checkout -b workflow/${{ github.event.inputs.app }}
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git add $AUTH_PATH
         git commit -m "workflow: Registered user of BASIC authentication for ${{ github.event.inputs.app }}"
-        git push origin ${{ github.event.inputs.app }}
+        git push origin workflow/${{ github.event.inputs.app }}
+
+    - name: create PR
+      id: pull-request
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: echo url=$(gh pr create -B ${{ github.event.inputs.app }} -t "Update auth file for ${{ github.event.inputs.app }}" -b "Updated user of BASIC authentication") >> $GITHUB_OUTPUT
+
+    - name: Approve PR
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh pr review --approve ${{ steps.pull-request.outputs.url }}
+
+    - name: Merge PR
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh pr merge --auto --merge ${{ steps.pull-request.outputs.url }}
 
   #ログイン確認失敗したとき
   revert_secret:
