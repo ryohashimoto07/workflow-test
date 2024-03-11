@@ -1,4 +1,4 @@
-name: manage-basic-auth-users (ope-train-dx-app)
+name: Manage Basic Authentication Users
 
 on:
   workflow_dispatch:
@@ -29,6 +29,7 @@ env:
   CI: true
   AUTH_PATH: ${{ github.event.inputs.environment }}/${{ github.event.inputs.app }}/auth
   ACTION: ${{ github.event.inputs.action }}
+  WORK_BRANCH: ${{ github.event.inputs.environment == 'dida' &&  'main' ||  github.event.inputs.app }}
 
 jobs:
   create_new_account:
@@ -42,7 +43,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        ref: ${{ github.event.inputs.app }}
+        ref: ${{ env.WORK_BRANCH }}
 
     - name: create password
       id: create-password
@@ -94,7 +95,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        ref: ${{ github.event.inputs.app }}
+        ref: ${{ env.WORK_BRANCH }}
 
     - name: login
       id: login
@@ -148,6 +149,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+      with:
+        ref: ${{ env.WORK_BRANCH }}
 
     - name: download
       uses: actions/download-artifact@v4
@@ -159,28 +162,34 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |-
-        git checkout -b workflow/${{ github.event.inputs.app }}
+        branch=$([[ ${{ github.event.inputs.environment }} == 'dida' ]] && echo 'workflow/' || echo '')
+        if [[ ${{ github.event.inputs.environment }} == 'dida' ]]; then
+          git checkout -b "${branch}${{ github.event.inputs.app }}"
+        fi
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git add $AUTH_PATH
         git commit -m "workflow: Registered user of BASIC authentication for ${{ github.event.inputs.app }}"
-        git push origin workflow/${{ github.event.inputs.app }}
+        git push origin "${branch}${{ github.event.inputs.app }}"
 
     - name: create PR
       id: pull-request
+      if: ${{ github.event.inputs.environment == 'dida' }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: echo url=$(gh pr create -B ${{ github.event.inputs.app }} -t "Update auth file for ${{ github.event.inputs.app }}" -b "Updated user of BASIC authentication") >> $GITHUB_OUTPUT
+      run: echo url=$(gh pr create -B 'main' -t "Update auth file for ${{ github.event.inputs.app }}" -b "Updated user of BASIC authentication") >> $GITHUB_OUTPUT
 
     - name: Approve PR
+      if: ${{ github.event.inputs.environment == 'dida' }}
       env:
         GITHUB_TOKEN: ${{ secrets.GH_PAT }}
       run: gh pr review --approve ${{ steps.pull-request.outputs.url }}
 
     - name: Merge PR
+      if: ${{ github.event.inputs.environment == 'dida' }}
       env:
         GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-      run: gh pr merge --auto --merge ${{ steps.pull-request.outputs.url }}
+      run: gh pr merge --auto --merge --delete-branch ${{ steps.pull-request.outputs.url }}
 
   #ログイン確認失敗したとき
   revert_secret:
@@ -193,7 +202,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        ref: ${{ github.event.inputs.app }}
+        ref: ${{ env.WORK_BRANCH }}
 
     - name: set context
       uses: azure/k8s-set-context@v3
