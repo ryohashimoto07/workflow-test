@@ -1,4 +1,4 @@
-name: kubectl wf test
+name: kubectl-test
 
 env:
   CI: true
@@ -11,7 +11,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: command
-        run: |-
-          test=${{  ("dida-test"=="dida" && "success") ||  "-test" }}
-          echo $test
+    - name: set context
+      uses: azure/k8s-set-context@v4
+      with:
+        method: service-principal
+        cluster-type: arc
+        cluster-name: dida-aks-g4-japaneast-test
+        resource-group: DataAnalysisTest
+
+    - name: kubectl command Test
+      run: |-
+        kubectl config current-context
