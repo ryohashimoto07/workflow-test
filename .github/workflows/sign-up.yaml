@@ -7,8 +7,8 @@ on:
         description: target apps for user management
         type: choice
         options:
-        - battery-management-support-app
         - ope-train-dx
+        - battery-management-support-app
         - workflow-test
       environment:
         description: Select the environment in which you manage users
@@ -104,8 +104,10 @@ jobs:
       #   ENV: ${{ github.event.inputs.environment == "dida" && "" || "-test" }}
       run: |-
         env=$([[ ${{ github.event.inputs.environment }} == 'dida' ]] && echo '' || echo '-test')
+        dns=$([[ ${{ github.event.inputs.app }} == 'battery-management-support-app' ]] && echo '' || echo 'dida-')
         echo $env
-        url="https://dida-${{ github.event.inputs.app }}$env.training-remotesupport-komatsu.com/"
+        echo $dns
+        url="https://${dns}${{ github.event.inputs.app }}$env.training-remotesupport-komatsu.com/"
         echo $url
         usernames=(${{ needs.create_new_account.outputs.usernames }})
         passwords=(${{ needs.create_new_account.outputs.passwords }})
@@ -145,7 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pr-url: ${{ steps.pull-request.outputs.url }}
-    if: needs.login.outputs.loginTestStatus != 'false'
+    if: needs.login.outputs.loginTestStatus != 'false' && inputs.environment == 'dida'
     steps:
     - name: Checkout
       uses: actions/checkout@v4

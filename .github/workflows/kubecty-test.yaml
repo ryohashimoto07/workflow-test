@@ -1,17 +1,217 @@
-name: kubectl wf test
+name: Manage Basic Authentication Users
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: target apps for user management
+        type: choice
+        options:
+        - battery-management-support-app
+        - ope-train-dx
+        - workflow-test
+      environment:
+        description: Select the environment in which you manage users
+        type: environment
+      action:
+        description: select create(update) or delete user
+        type: choice
+        default: create or update
+        options:
+        - create or update
+        - delete
+      userId:
+        description: user mail address
+        required: true
+        type: string
 
 env:
   CI: true
-on:
-  workflow_dispatch:
+  AUTH_PATH: ${{ github.event.inputs.environment }}/${{ github.event.inputs.app }}/auth
+  ACTION: ${{ github.event.inputs.action }}
+  WORK_BRANCH: ${{ github.event.inputs.environment == 'dida' &&  'main' ||  github.event.inputs.app }}
 
 jobs:
-  kubectl:
-    name: kubectl
+  create_new_account:
+    name: create new account
     runs-on: ubuntu-latest
-
+    environment: ${{ github.event.inputs.environment }}
+    outputs:
+      usernames: ${{ steps.create-password.outputs.usernames }}
+      passwords: ${{ steps.create-password.outputs.passwords }}
     steps:
-      - name: command
-        run: |-
-          test=${{  ("dida-test"=="dida" && "success") ||  "-test" }}
-          echo $test
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.WORK_BRANCH }}
+
+    - name: create password
+      id: create-password
+      run: |-
+        sudo apt install -y pwgen
+        IFS=' ' read -ra username_array <<< "${{ github.event.inputs.userId }}"
+        passwords=()
+        for username in "${username_array[@]}"; do
+          password=$(pwgen -y -r "\"'()*+,-./:;<=>?@\$\!\#\&[\\]^_\`{|}~" 10 1)
+          usernames+=("$username")
+          passwords+=("$password")
+          if [[ "$ACTION" == 'create or update' ]]; then
+            htpasswd -bB "$AUTH_PATH" "$username" "$password" > /dev/null 2>&1
+          else
+            echo ${{ github.event.inputs.action }}
+            htpasswd -D "$AUTH_PATH" "$username"
+          fi
+         echo $username $password
+        done
+        echo usernames=${usernames[@]} >> $GITHUB_OUTPUT
+        echo passwords=${passwords[@]} >> $GITHUB_OUTPUT
+
+    - name: upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: auth
+        path: ${{ env.AUTH_PATH }}
+
+    - name: set context
+      uses: azure/k8s-set-context@v3
+      with:
+        method: kubeconfig
+        kubeconfig: ${{ secrets.KUBE_CONFIG }}
+        context: ${{ github.event.inputs.environment == 'dida' && 'dida-aks-g4-japaneast-production' || 'dida-aks-g4-japaneast-test' }}
+
+    - name: create secret
+      run: |-
+        kubectl delete secret basic-auth-${{ github.event.inputs.app }}
+        kubectl create secret generic basic-auth-${{ github.event.inputs.app }} --from-file=$AUTH_PATH
+
+  #アプリにログインできるかテスト
+  login_test:
+    name: Login Test Ope Train DX App
+    needs: create_new_account
+    runs-on: ubuntu-latest
+    outputs:
+      loginTestStatus: ${{ steps.login.outputs.result }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.WORK_BRANCH }}
+
+    - name: login
+      id: login
+      if: env.ACTION == 'create or update'
+      # env:
+      #   ENV: ${{ github.event.inputs.environment == "dida" && "" || "-test" }}
+      run: |-
+        env=$([[ ${{ github.event.inputs.environment }} == 'dida' ]] && echo '' || echo '-test')
+        echo $env
+        url="https://dida-${{ github.event.inputs.app }}$env.training-remotesupport-komatsu.com/"
+        echo $url
+        usernames=(${{ needs.create_new_account.outputs.usernames }})
+        passwords=(${{ needs.create_new_account.outputs.passwords }})
+        len=${#usernames[@]}
+        for ((i=0; i<$len; i++ )); do
+          username=${usernames[i]}
+          password=${passwords[i]}
+          http_code=$(curl -u "$username:$password" -w "%{http_code}" "$url" -o /dev/null -s)
+          echo $http_code
+          if [[ $http_code != 200 ]];then
+            echo "result=false" >> $GITHUB_OUTPUT
+            break
+          fi
+          echo "$username,$password" >> ./auth.csv
+        done;
+
+    - name: Append User Password to CSV
+      if: steps.login.outputs.loginTestStatus != 'false'
+      env:
+        BLOB_FILE_NAME: user_password_${{ github.event.inputs.environment }}-${{ github.event.inputs.app }}.csv
+      run: |-
+        az storage blob download --container-name mfkdata --name $BLOB_FILE_NAME --file "user_password.csv" --account-name dataanalysismfkdaily --sas-token "${{ secrets.AZURE_STORAGE_SAS_TOKEN }}"
+        IFS=' ' read -ra username_array <<< "${{ github.event.inputs.userId }}"
+        for username in "${username_array[@]}"; do
+          grep -v "$username" user_password.csv > temp.csv && mv temp.csv user_password.csv
+        done
+        if [[ "$ACTION" == 'create or update' ]]; then
+            cat auth.csv >> "user_password.csv"
+            rm -rf auth.csv
+        fi
+        az storage blob upload --container-name mfkdata --name $BLOB_FILE_NAME --file "user_password.csv" --account-name dataanalysismfkdaily --sas-token "${{ secrets.AZURE_STORAGE_SAS_TOKEN }}" --overwrite
+        rm -rf user_password.csv
+
+  merge:
+    name: update auth file
+    needs: login_test
+    runs-on: ubuntu-latest
+    outputs:
+      pr-url: ${{ steps.pull-request.outputs.url }}
+    if: needs.login.outputs.loginTestStatus != 'false' && inputs.environment == 'dida'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.WORK_BRANCH }}
+
+    - name: download
+      uses: actions/download-artifact@v4
+      with:
+        name: auth
+        path: ${{ github.event.inputs.environment }}/${{ github.event.inputs.app }}/
+
+    - name: Commit
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |-
+        branch=$([[ ${{ github.event.inputs.environment }} == 'dida' ]] && echo 'workflow/' || echo '')
+        if [[ ${{ github.event.inputs.environment }} == 'dida' ]]; then
+          git checkout -b "${branch}${{ github.event.inputs.app }}"
+        fi
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add $AUTH_PATH
+        git commit -m "workflow: Registered user of BASIC authentication for ${{ github.event.inputs.app }}"
+        git push origin "${branch}${{ github.event.inputs.app }}"
+
+    - name: create PR
+      id: pull-request
+      if: ${{ github.event.inputs.environment == 'dida' }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: echo url=$(gh pr create -B 'main' -t "Update auth file for ${{ github.event.inputs.app }}" -b "Updated user of BASIC authentication") >> $GITHUB_OUTPUT
+
+    - name: Approve PR
+      if: ${{ github.event.inputs.environment == 'dida' }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      run: gh pr review --approve ${{ steps.pull-request.outputs.url }}
+
+    - name: Merge PR
+      if: ${{ github.event.inputs.environment == 'dida' }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      run: gh pr merge --auto --merge --delete-branch ${{ steps.pull-request.outputs.url }}
+
+  #ログイン確認失敗したとき
+  revert_secret:
+    name: revert secret
+    needs: login_test
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    if: needs.login_test.outputs.loginTestStatus == 'false'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.WORK_BRANCH }}
+
+    - name: set context
+      uses: azure/k8s-set-context@v3
+      with:
+        method: kubeconfig
+        kubeconfig: ${{ secrets.KUBE_CONFIG }}
+        context: ${{ github.event.inputs.environment == 'dida' && 'dida-aks-g4-japaneast-production' || 'dida-aks-g4-japaneast-test' }}
+
+    - name: create secret
+      run: |-
+        kubectl delete secret basic-auth-${{ github.event.inputs.app }}
+        kubectl create secret generic basic-auth-${{ github.event.inputs.app }} --from-file=$AUTH_PATH
